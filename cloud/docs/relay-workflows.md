@@ -374,7 +374,8 @@ remain general at 1,000/60. The workflow lock, single-use evidence marker, exact
 targeted Terraform plan, and per-cell heartbeat/admission oracle are unchanged.
 
 `Deploy Relay Production Same-Cap` rolls only the reviewed US 1,000/60 and Asia 3,000/60 serving
-sets without changing a cell's connection shape. Use `canary-apply` for exactly one cell. A successful canary
+sets and the two migration-only US 600/60 cells, C17 and C18, without changing a cell's connection
+shape. Use `canary-apply` for exactly one cell. A successful canary
 seals its commit, target and rollback digests, selector generation, and durable rehome generation;
 `batch-apply` accepts only that same authority and rolls two to four cells sequentially. Each cell is
 isolated, drained to two restart-safe samples, replaced from a targeted saved plan, and restored only
@@ -383,6 +384,51 @@ worker must remain disabled throughout. The post-restart trust check is applicat
 director; the workflow never receives or mints a director or stamped-cell runtime token. A failure
 keeps only the selected cell migration-only, while the exact rollback digest remains dispatchable via
 the same workflow's `rollback` mode.
+
+A roll holds the whole startup script identical before and after except the image, so a
+template stale enough to predate a pinned line fails closed rather than absorbing the drift.
+The one exception is the capacity identity: a cell that predates it gains it on its next roll,
+and the plan validator pins the exact reviewed identity instead of comparing that line, so a
+roll can never drop or rewrite it. Any other stale line still fails closed and needs a
+convergence apply first.
+
+A drained cell is refused before a roll, because draining means something is already
+shedding its connections. A migration-only cell has none to shed, so the flag decides nothing
+there and is accepted on entry; the replacement VM is still required not to be draining, and
+the incarnation check still proves it was replaced. That also unwedges the state a failed
+canary leaves behind, where the wave's own drain set the flag and no restart followed.
+
+C17 and C18 hold no hosts and are not general, so rolling one displaces nobody: they are the
+zero-displacement canary for a new image. Their wave enters and leaves migration-only, so its
+isolate and its restore are both no-ops and the selector generation does not move; a general
+cell's wave still advances it by two. One wave may not mix the two classes, because every cell
+after the first offsets from a single per-wave delta. Neither cell is a declared regional-rehome
+source, so its template carries no rehome trust lines and it may roll only at rehome protocol `0`;
+the job refuses a trusted protocol for it before it plans anything.
+
+### Gate override (break-glass)
+
+Every mutating same-cap wave normally consumes a fresh 15-minute aggregate monitor dry-run.
+`gate-override-reason` plus `gate-override-confirmation`, the latter exactly
+`SKIP_RELAY_MONITOR_GATE <target-image-digest>`, skips that aggregate evidence and nothing
+else. A partial or mismatched override fails the run before any mutation, and `verify` mode
+rejects it outright.
+
+It is legitimate when the roll is the fix for the condition the gate is freezing on, or
+during an incident with the director healthy. It is not a way to move faster on an ordinary
+wave.
+
+The live per-wave preflight still runs, against the same thresholds, with the expected
+selector taken from the dispatch inputs and the migration policy pinned to `strict`. That
+membership is canonicalised the same way the monitor canonicalises its own, so it must name
+every configured cell exactly once and its order does not matter.
+Durable rehome disabled, the exact selector generation and membership, the reviewed
+Terraform plan, the predecessor and new-incarnation checks, the rollout lease, the
+failed-wave failsafe, and single-dispatch mutation are all unchanged. The actor, reason,
+and confirmation are recorded in the gate job's run summary and, for a canary, sealed into
+the canary artifact under `gateOverride`; a batch may reuse a canary rolled under an
+override, because that authority never carried a monitor run ID. See
+[gate override (break-glass)](./relay-incident-monitor.md#gate-override-break-glass).
 
 The first compatible director rollout uses `bootstrap-runtime-identity=true` with
 `BOOTSTRAP_RELAY_DIRECTOR_REHOME_IDENTITY`. That one-time path requires the exact stamped-cell
@@ -400,3 +446,30 @@ after checkout and authentication, before package installation, revision checks,
 Their typed confirmations are `PAUSE_REGIONAL_REHOMING` and `DISABLE_REGIONAL_REHOMING`. Keep the
 default 3,600,000 ms drain grace so existing splices can finish. The job summary contains only fresh
 aggregate active, receipt, registration, completion, and abort counts.
+
+## Mobile push gateway
+
+`Deploy Push Gateway Production` (`.github/workflows/cloud-push-deploy.yml`) is the deploy path
+for `orca-cloud-push`, the mobile push gateway. It is the one `cloud-*` workflow that is not a
+relay operation, and it is here because it shares the Artifact Registry repository and rollout
+lease. Push uses a dedicated Cloud SQL instance.
+
+It authenticates through `PRODUCTION_GCP_PUSH_DEPLOY_WORKLOAD_IDENTITY_PROVIDER` and
+`PRODUCTION_GCP_PUSH_DEPLOY_SERVICE_ACCOUNT`. The dedicated identity has Artifact Registry writer,
+Cloud Run developer on the push service, and impersonation of only the push runtime account.
+Its provider pins the repository, production environment, main branch, and exact dispatch workflow;
+its distinct principal attribute cannot assume the shared Relay deploy account.
+
+Foundation grants the dedicated account access to the rollout-lock prefix and bucket metadata.
+Apply that companion grant and publish the identity outputs before running the workflow. See
+[push gateway deployment setup](./push-gateway.md#deploying) for the activation steps.
+
+The run builds the exact reviewed image digest before taking the lease and rejects images
+without validation-mode support using a network-isolated container. Under the lease it boots
+an inert, read-only validation revision, checks readiness, mode, scaling and FCM credentials,
+then deletes it before deliberately activating the same digest in a new revision. Activation
+starts schema writes, pruners and queue consumers before HTTP promotion. Rollback requires
+restoring traffic, deleting the rejected active revision, and restoring the service template to
+the known-good image in normal mode. The untagged template-recovery revision can run known-good
+workers and is retired before lease release; see the
+[deployment and rollback contract](./push-gateway.md#deploying).
