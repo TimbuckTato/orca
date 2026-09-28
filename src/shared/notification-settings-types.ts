@@ -1,4 +1,5 @@
 import type { AgentStatusState, AgentType } from './agent-status-types'
+import type { AgentJournalTurnOutcome } from './agent-turn-outcome'
 
 export type NotificationSettings = {
   enabled: boolean
@@ -52,6 +53,13 @@ export type NotificationDispatchRequest = {
   agentInterrupted?: boolean
   /** Opaque caller-provided reason from `orca worktree set --needs-attention`, shown verbatim. */
   needsAttentionReason?: string
+  /** The verdict on the turn this notification reports, which picks its wording. */
+  agentTurnOutcome?: AgentJournalTurnOutcome
+  /**
+   * Which lane raised this, so the click handler knows how to reveal the subject. Absent means the
+   * terminal lane, which is every sender that predates structured chat.
+   */
+  surface?: 'terminal' | 'agent-session'
 }
 
 export type NotificationDispatchResult = {

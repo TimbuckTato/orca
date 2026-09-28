@@ -35,6 +35,8 @@ export type NotificationDeliveryDependencies = {
   ) => NotificationDispatchResult | Promise<NotificationDispatchResult>
   platform: NodeJS.Platform
   now: () => number
+  /** Told once per path that actually announced the request: a desktop banner shown, or a mobile alert sent. */
+  recordAnnounced?: (request: NotificationDispatchRequest) => void
 }
 
 export type NotificationDeliveryService = {
@@ -56,6 +58,21 @@ export function createNotificationDeliveryService(
   const dedupeKeyFor = (request: NotificationDispatchRequest): string => {
     const worktreeKey = request.worktreeId ?? request.worktreeLabel ?? 'global'
     return request.source === 'needs-attention' ? `needs-attention:${worktreeKey}` : worktreeKey
+  }
+
+  const deliverNativeAndRecord = (
+    request: NotificationDispatchRequest,
+    options: ReturnType<typeof buildNotificationOptions>,
+    settings: NotificationSettings
+  ): NotificationDispatchResult | Promise<NotificationDispatchResult> => {
+    const recordIfDelivered = (result: NotificationDispatchResult): NotificationDispatchResult => {
+      if (result.delivered) {
+        deps.recordAnnounced?.(request)
+      }
+      return result
+    }
+    const result = deps.deliverNative(request, options, settings)
+    return result instanceof Promise ? result.then(recordIfDelivered) : recordIfDelivered(result)
   }
 
   return {
@@ -108,6 +125,7 @@ export function createNotificationDeliveryService(
             // vs "finished" — and to stay silent while the agent is still working.
             ...(request.agentState ? { agentState: request.agentState } : {})
           })
+          deps.recordAnnounced?.(request)
         }
       }
 
@@ -144,7 +162,7 @@ export function createNotificationDeliveryService(
       }
 
       if (deps.platform !== 'darwin') {
-        return deps.deliverNative(request, notificationOptions, settings)
+        return deliverNativeAndRecord(request, notificationOptions, settings)
       }
       // Why: macOS silently swallows notifications while permission is denied/undecided (verified macOS 26); skip so the renderer can show a fallback.
       return deps.readAuthorizationStatus().then((authorization) => {
@@ -152,7 +170,7 @@ export function createNotificationDeliveryService(
           deps.recordDeliveryOutcome('failed')
           return { delivered: false, reason: 'blocked-by-system' }
         }
-        return deps.deliverNative(request, notificationOptions, settings)
+        return deliverNativeAndRecord(request, notificationOptions, settings)
       })
     }
   }

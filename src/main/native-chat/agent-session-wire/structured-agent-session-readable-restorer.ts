@@ -1,7 +1,5 @@
 import type { AgentSessionRecord } from '../../../shared/agent-session-record'
-import type { AgentSessionWireRefusal } from '../../../shared/agent-session-wire'
-import type { AgentSessionRecordStore } from '../../runtime/agent-session-record-store'
-import type { RestoredStructuredAgentSessionRead } from './structured-agent-session-read-restore'
+import type { StructuredAgentSessionReadRestoreDeps } from './structured-agent-session-restart-restore'
 import {
   restoreOneStructuredAgentSessionRead,
   restoreStructuredAgentSessionsOnRestart
@@ -11,20 +9,8 @@ export class StructuredAgentSessionReadableRestorer {
   private restorePromise: Promise<void> | null = null
 
   constructor(
-    private readonly input: {
-      store: AgentSessionRecordStore
-      journalRoot: string
+    private readonly input: StructuredAgentSessionReadRestoreDeps & {
       supportsRecord: (record: AgentSessionRecord) => boolean
-      reconcile: (sessionId: string) => Promise<AgentSessionWireRefusal | null>
-      resolveRecovery: (sessionId: string) => Promise<unknown>
-      serialize: <T>(sessionId: string, task: () => Promise<T>) => Promise<T>
-      hasSession: (sessionId: string) => boolean
-      onReadable: (sessionId: string, restored: RestoredStructuredAgentSessionRead) => void
-      retrySettlement: (
-        sessionId: string,
-        params: RestoredStructuredAgentSessionRead['params']
-      ) => Promise<boolean>
-      restoreHandoff: (sessionId: string) => Promise<void>
     }
   ) {}
 
@@ -48,19 +34,23 @@ export class StructuredAgentSessionReadableRestorer {
    * answers for Claude and Codex from the record's own provider.
    */
   async restoreOne(sessionId: string): Promise<boolean> {
-    const record = this.input.store.getRecord(sessionId)
-    if (!record || !this.input.supportsRecord(record)) {
+    if (!this.supports(sessionId)) {
       return false
     }
     await restoreOneStructuredAgentSessionRead(this.input, sessionId)
     return this.input.hasSession(sessionId)
   }
 
+  private supports(sessionId: string): boolean {
+    const record = this.input.openDeps.store.getRecord(sessionId)
+    return record !== null && this.input.supportsRecord(record)
+  }
+
   private async restoreReadableSessions(sessionIds?: readonly string[]): Promise<void> {
     const targetOrder = sessionIds
       ? new Map(sessionIds.map((sessionId, index) => [sessionId, index]))
       : null
-    const records = this.input.store
+    const records = this.input.openDeps.store
       .listRecords()
       .filter(
         (record) =>
